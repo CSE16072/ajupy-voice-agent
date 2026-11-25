@@ -1,0 +1,8 @@
+
+streamlit
+google-genai==3.6.1
+python-dotenv
+faster-whisper
+gTTS
+fastapi
+uvicorn[standard]

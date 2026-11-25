@@ -1,0 +1,541 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AJUPY AI - Real-Time Voice Assistant</title>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #101827;
+            font-family: Arial, sans-serif;
+            color: white;
+        }
+
+        .container {
+            width: 600px;
+            max-width: 92%;
+            min-height: 615px;
+            background: #1e2c40;
+            border-radius: 25px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 80px 25px;
+            text-align: center;
+        }
+
+        h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+
+        .subtitle {
+            color: #b8c8e4;
+            font-size: 20px;
+            margin-bottom: 50px;
+        }
+
+        .microphone {
+            font-size: 65px;
+            margin-bottom: 30px;
+        }
+
+        #status {
+            color: #ffbd45;
+            font-size: 20px;
+            margin-bottom: 40px;
+        }
+
+        .buttons {
+            display: flex;
+            gap: 25px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-bottom: 40px;
+        }
+
+        button {
+            border: none;
+            border-radius: 40px;
+            padding: 20px 35px;
+            font-size: 18px;
+            cursor: pointer;
+        }
+
+        #startButton {
+            background: #278675;
+            color: #101827;
+        }
+
+        #stopButton {
+            background: #f06470;
+            color: white;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #message {
+            color: #d7e3f8;
+            font-size: 20px;
+            margin-bottom: 20px;
+        }
+
+        #transcript {
+            width: 100%;
+            color: #d7e3f8;
+            font-size: 16px;
+            line-height: 1.6;
+            overflow-wrap: anywhere;
+        }
+
+        @media (max-width: 500px) {
+            .container {
+                padding: 55px 18px;
+            }
+
+            h1 {
+                font-size: 38px;
+            }
+
+            .subtitle {
+                font-size: 17px;
+            }
+
+            button {
+                padding: 16px 25px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+
+        <h1>AJUPY AI</h1>
+
+        <p class="subtitle">Your Real-Time AI Voice Assistant</p>
+
+        <div class="microphone">🎙️</div>
+
+        <p id="status">AJUPY is ready!</p>
+
+        <div class="buttons">
+
+            <button id="startButton" onclick="startConversation()">
+                Start Conversation
+            </button>
+
+            <button id="stopButton" onclick="stopConversation()" disabled>
+                Stop
+            </button>
+
+        </div>
+
+        <p id="message">AJUPY is ready!</p>
+
+        <div id="transcript"></div>
+
+    </div>
+
+    <script>
+
+        let websocket = null;
+        let audioContext = null;
+        let microphoneStream = null;
+        let source = null;
+        let processor = null;
+        let silentGain = null;
+
+        let nextPlaybackTime = 0;
+        let isRunning = false;
+
+        const statusElement = document.getElementById("status");
+        const messageElement = document.getElementById("message");
+        const transcriptElement = document.getElementById("transcript");
+
+        const startButton = document.getElementById("startButton");
+        const stopButton = document.getElementById("stopButton");
+
+
+        // Start AJUPY conversation
+        async function startConversation() {
+
+            if (isRunning) return;
+
+            try {
+
+                statusElement.textContent = "Requesting microphone...";
+                messageElement.textContent = "Please allow microphone access.";
+
+                microphoneStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+
+                audioContext = new AudioContext();
+
+                await audioContext.resume();
+
+                nextPlaybackTime = audioContext.currentTime;
+
+                // Automatically select the correct WebSocket protocol.
+                // Local HTTP uses ws:// and deployed HTTPS uses wss://.
+                const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+
+                websocket = new WebSocket(
+                    `${protocol}//${window.location.host}/ws`
+                );
+
+                websocket.binaryType = "arraybuffer";
+
+                websocket.onopen = function () {
+
+                    console.log("Connected to AJUPY server");
+
+                    isRunning = true;
+
+                    statusElement.textContent = "AJUPY is listening...";
+                    messageElement.textContent = "Speak to AJUPY!";
+
+                    startButton.disabled = true;
+                    stopButton.disabled = false;
+
+                    setupMicrophone();
+                };
+
+
+                // Receive messages and audio from Gemini
+                websocket.onmessage = async function (event) {
+
+                    if (typeof event.data === "string") {
+
+                        const data = JSON.parse(event.data);
+
+                        if (data.type === "connected") {
+
+                            messageElement.textContent = data.message;
+
+                        } else if (data.type === "turn_complete") {
+
+                            console.log("AJUPY completed its response.");
+
+                        } else if (data.type === "error") {
+
+                            console.error("Server error:", data.message);
+
+                            messageElement.textContent =
+                                "Error: " + data.message;
+                        }
+
+                    } else {
+
+                        await playAudio(event.data);
+
+                    }
+                };
+
+
+                websocket.onerror = function (error) {
+
+                    console.error("WebSocket error:", error);
+
+                    statusElement.textContent = "Connection error";
+
+                    messageElement.textContent =
+                        "Unable to connect to AJUPY server.";
+                };
+
+
+                websocket.onclose = function () {
+
+                    console.log("WebSocket disconnected");
+
+                    if (isRunning) {
+                        stopConversation();
+                    }
+                };
+
+
+            } catch (error) {
+
+                console.error("Start error:", error);
+
+                statusElement.textContent = "Unable to start";
+
+                messageElement.textContent = error.message;
+
+                stopConversation();
+            }
+        }
+
+
+        // Capture microphone and send audio to Gemini
+        function setupMicrophone() {
+
+            source = audioContext.createMediaStreamSource(microphoneStream);
+
+            processor = audioContext.createScriptProcessor(
+                4096,
+                1,
+                1
+            );
+
+            silentGain = audioContext.createGain();
+
+            silentGain.gain.value = 0;
+
+            let chunkCount = 0;
+
+            processor.onaudioprocess = function (event) {
+
+                if (
+                    websocket &&
+                    websocket.readyState === WebSocket.OPEN
+                ) {
+
+                    const input = event.inputBuffer.getChannelData(0);
+
+                    const pcmData = convertTo16kHz(
+                        input,
+                        audioContext.sampleRate
+                    );
+
+                    if (pcmData.length > 0) {
+
+                        websocket.send(pcmData.buffer);
+
+                        chunkCount++;
+
+                        if (
+                            chunkCount === 1 ||
+                            chunkCount % 50 === 0
+                        ) {
+
+                            console.log(
+                                "Microphone audio sent:",
+                                chunkCount,
+                                "chunks"
+                            );
+
+                        }
+                    }
+                }
+            };
+
+            source.connect(processor);
+
+            processor.connect(silentGain);
+
+            silentGain.connect(audioContext.destination);
+
+            console.log("Microphone is ready");
+        }
+
+
+        // Convert microphone audio to 16 kHz PCM
+        function convertTo16kHz(input, sampleRate) {
+
+            const targetRate = 16000;
+
+            const ratio = sampleRate / targetRate;
+
+            const newLength = Math.floor(input.length / ratio);
+
+            const output = new Int16Array(newLength);
+
+            for (let i = 0; i < newLength; i++) {
+
+                const position = i * ratio;
+
+                const index = Math.floor(position);
+
+                const fraction = position - index;
+
+                const nextIndex = Math.min(
+                    index + 1,
+                    input.length - 1
+                );
+
+                const sample =
+                    input[index] * (1 - fraction) +
+                    input[nextIndex] * fraction;
+
+                const clamped = Math.max(-1, Math.min(1, sample));
+
+                output[i] = clamped < 0
+                    ? clamped * 32768
+                    : clamped * 32767;
+            }
+
+            return output;
+        }
+
+
+        // Play audio received from Gemini
+        async function playAudio(audioData) {
+
+            try {
+
+                if (!audioContext) return;
+
+                if (audioData instanceof Blob) {
+
+                    audioData = await audioData.arrayBuffer();
+                }
+
+                if (!(audioData instanceof ArrayBuffer)) {
+
+                    console.error("Unexpected audio format:", audioData);
+
+                    return;
+                }
+
+                const pcmData = new Int16Array(audioData);
+
+                if (pcmData.length === 0) {
+
+                    console.warn("Received empty audio data");
+
+                    return;
+                }
+
+                // Gemini audio output: 24 kHz
+                const sampleRate = 24000;
+
+                const audioBuffer = audioContext.createBuffer(
+                    1,
+                    pcmData.length,
+                    sampleRate
+                );
+
+                const channelData = audioBuffer.getChannelData(0);
+
+                for (let i = 0; i < pcmData.length; i++) {
+
+                    channelData[i] = pcmData[i] / 32768;
+                }
+
+                const audioSource = audioContext.createBufferSource();
+
+                audioSource.buffer = audioBuffer;
+
+                audioSource.connect(audioContext.destination);
+
+                const currentTime = audioContext.currentTime;
+
+                if (nextPlaybackTime < currentTime) {
+
+                    nextPlaybackTime = currentTime;
+                }
+
+                audioSource.start(nextPlaybackTime);
+
+                nextPlaybackTime += audioBuffer.duration;
+
+                console.log(
+                    "Playing Gemini audio:",
+                    pcmData.length,
+                    "samples"
+                );
+
+            } catch (error) {
+
+                console.error("Audio playback error:", error);
+
+                messageElement.textContent =
+                    "Audio playback error. Check Console.";
+            }
+        }
+
+
+        // Stop conversation
+        function stopConversation() {
+
+            isRunning = false;
+
+            if (processor) {
+
+                processor.disconnect();
+
+                processor.onaudioprocess = null;
+
+                processor = null;
+            }
+
+            if (source) {
+
+                source.disconnect();
+
+                source = null;
+            }
+
+            if (silentGain) {
+
+                silentGain.disconnect();
+
+                silentGain = null;
+            }
+
+            if (microphoneStream) {
+
+                microphoneStream.getTracks().forEach(track => track.stop());
+
+                microphoneStream = null;
+            }
+
+            if (websocket) {
+
+                if (
+                    websocket.readyState === WebSocket.OPEN ||
+                    websocket.readyState === WebSocket.CONNECTING
+                ) {
+
+                    websocket.close();
+                }
+
+                websocket = null;
+            }
+
+            if (audioContext) {
+
+                audioContext.close();
+
+                audioContext = null;
+            }
+
+            startButton.disabled = false;
+
+            stopButton.disabled = true;
+
+            statusElement.textContent = "AJUPY is stopped!";
+
+            messageElement.textContent =
+                "Click Start Conversation to talk again.";
+
+            console.log("AJUPY conversation stopped");
+        }
+
+    </script>
+
+</body>
+</html>
